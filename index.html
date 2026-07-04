@@ -3,114 +3,145 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Scanner Struk Penjualan</title>
+    <title>Scanner Struk Penjualan Massal</title>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <style>
         body { font-family: sans-serif; padding: 20px; max-width: 500px; margin: auto; }
         button, input { width: 100%; padding: 10px; margin-top: 10px; box-sizing: border-box; }
-        #result { margin-top: 20px; padding: 10px; background: #f4f4f4; border-radius: 5px; white-space: pre-wrap; font-size: 12px;}
+        #result { margin-top: 20px; padding: 10px; background: #f4f4f4; border-radius: 5px; white-space: pre-wrap; font-size: 12px; max-height: 300px; overflow-y: auto;}
         #status { color: blue; font-weight: bold; margin-top: 10px; }
+        .receipt-summary { border-bottom: 1px solid #ccc; padding-bottom: 10px; margin-bottom: 10px; }
     </style>
 </head>
 <body>
 
-    <h2>Scan Struk Penjualan</h2>
-    <input type="file" accept="image/*" capture="environment" id="fileInput">
+    <h2>Scan Struk Massal</h2>
+    <input type="file" accept="image/*" id="fileInput" multiple>
     
-    <div id="status"></div>
-    <div id="result">Hasil teks akan muncul di sini...</div>
+    <div id="status">Pilih satu atau beberapa foto struk sekaligus...</div>
+    <div id="result">Hasil deteksi akan muncul di sini...</div>
     
-    <button id="sendBtn" style="display:none; background: #28a745; color: white; border: none; cursor:pointer; font-weight:bold;">Simpan ke Google Sheets</button>
+    <button id="sendBtn" style="display:none; background: #28a745; color: white; border: none; cursor:pointer; font-weight:bold;">Simpan Semua ke Google Sheets</button>
 
     <script>
         const fileInput = document.getElementById('fileInput');
         const statusDiv = document.getElementById('status');
         const resultDiv = document.getElementById('result');
         const sendBtn = document.getElementById('sendBtn');
-        let extractedText = "";
+        
+        // Simpan data semua struk di variabel ini
+        let allReceiptsData = []; 
 
-        // URL Apps Script Anda sudah dimasukkan dengan benar
         const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxIYfupSS1LyrzBa6_NViZhaxmUZ_SRbqNwyIgb9NtewPu5SnsAymiI8rX4YSGk5V1ZtA/exec';
 
         fileInput.addEventListener('change', async (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
+            const files = e.target.files;
+            if (files.length === 0) return;
 
-            statusDiv.innerText = "Sedang membaca struk... Mohon tunggu.";
+            statusDiv.innerText = `Mempersiapkan sistem untuk membaca ${files.length} foto...`;
             statusDiv.style.color = "blue";
-            resultDiv.innerText = "";
+            resultDiv.innerHTML = "";
             sendBtn.style.display = "none";
+            allReceiptsData = []; // Reset data
 
             try {
                 const worker = await Tesseract.createWorker('ind');
-                const ret = await worker.recognize(file);
-                extractedText = ret.data.text;
                 
-                resultDiv.innerText = extractedText;
-                statusDiv.innerText = "Selesai membaca! Silakan klik tombol simpan.";
-                sendBtn.style.display = "block";
+                // Looping untuk membaca setiap foto yang diupload
+                for (let k = 0; k < files.length; k++) {
+                    statusDiv.innerText = `Membaca foto ${k + 1} dari ${files.length}...`;
+                    
+                    const ret = await worker.recognize(files[k]);
+                    const extractedText = ret.data.text;
+                    
+                    // --- PROSES EKSTRAKSI DATA LANGSUNG ---
+                    const matchTanggal = extractedText.match(/(\d{4}-\d{2}-\d{2})/);
+                    const tanggalStruk = matchTanggal ? matchTanggal[1] : "Tidak ditemukan";
+
+                    const lines = extractedText.split('\n');
+                    const detectedItems = [];
+
+                    for (let i = 0; i < lines.length; i++) {
+                        const line = lines[i].trim();
+                        const matchQtyPrice = line.match(/^(\d+)\s*x\s*([\d\.,]+)/i);
+                        
+                        if (matchQtyPrice) {
+                            const qty = parseInt(matchQtyPrice[1]);
+                            const price = parseInt(matchQtyPrice[2].replace(/[\.,]/g, ''));
+                            
+                            let itemName = "Item Tanpa Nama";
+                            if (i > 0) {
+                                let prevLine = lines[i - 1].trim();
+                                if (prevLine && !prevLine.includes('---')) {
+                                    itemName = prevLine;
+                                }
+                            }
+                            detectedItems.push({ name: itemName, qty: qty, price: price });
+                        }
+                    }
+
+                    // Simpan hasil ekstraksi foto ini ke dalam antrean
+                    allReceiptsData.push({
+                        tanggal: tanggalStruk,
+                        items: detectedItems,
+                        text: extractedText
+                    });
+
+                    // Tampilkan ringkasan di layar
+                    resultDiv.innerHTML += `
+                        <div class="receipt-summary">
+                            <strong>Struk ${k + 1}</strong><br>
+                            Tanggal: ${tanggalStruk} <br>
+                            Total Item Terdeteksi: ${detectedItems.length}
+                        </div>
+                    `;
+                }
                 
                 await worker.terminate();
+                
+                statusDiv.innerText = `Selesai! Berhasil membaca ${files.length} foto struk.`;
+                statusDiv.style.color = "green";
+                sendBtn.style.display = "block";
+                
             } catch (err) {
-                statusDiv.innerText = "Gagal membaca struk.";
+                statusDiv.innerText = "Terjadi kesalahan saat membaca gambar.";
                 statusDiv.style.color = "red";
                 console.error(err);
             }
         });
 
         sendBtn.addEventListener('click', async () => {
-            statusDiv.innerText = "Mengekstrak daftar item dan mengirim...";
-            statusDiv.style.color = "blue";
             sendBtn.disabled = true;
+            let successCount = 0;
 
-            // Ekstraksi Tanggal
-            const matchTanggal = extractedText.match(/(\d{4}-\d{2}-\d{2})/);
-            const tanggalStruk = matchTanggal ? matchTanggal[1] : "Tidak ditemukan";
-
-            // Ekstraksi Item
-            const lines = extractedText.split('\n');
-            const detectedItems = [];
-
-            for (let i = 0; i < lines.length; i++) {
-                const line = lines[i].trim();
-                const matchQtyPrice = line.match(/^(\d+)\s*x\s*([\d\.,]+)/i);
+            // Mengirim data ke Google Sheets satu per satu (antre) agar server tidak menolak
+            for (let i = 0; i < allReceiptsData.length; i++) {
+                statusDiv.innerText = `Mengirim struk ${i + 1} dari ${allReceiptsData.length} ke database...`;
+                statusDiv.style.color = "blue";
                 
-                if (matchQtyPrice) {
-                    const qty = parseInt(matchQtyPrice[1]);
-                    const price = parseInt(matchQtyPrice[2].replace(/[\.,]/g, ''));
-                    
-                    let itemName = "Item Tanpa Nama";
-                    if (i > 0) {
-                        let prevLine = lines[i - 1].trim();
-                        if (prevLine && !prevLine.includes('---')) {
-                            itemName = prevLine;
-                        }
-                    }
-                    
-                    detectedItems.push({ name: itemName, qty: qty, price: price });
+                try {
+                    await fetch(APPS_SCRIPT_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                        body: JSON.stringify(allReceiptsData[i]),
+                        redirect: 'follow'
+                    });
+                    successCount++;
+                } catch (err) {
+                    console.error(`Error kirim struk ${i+1}: `, err); 
                 }
             }
 
-            const payload = { tanggal: tanggalStruk, items: detectedItems, text: extractedText };
-
-            try {
-                const response = await fetch( 'https://script.google.com/macros/s/AKfycbwfQzeFpytPEu2LxiGh-VZxdsmqdIjdPhSXFA9FYnVXNazDIICU_2QpZjagMmYoyKVR/exec', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-                    body: JSON.stringify(payload),
-                    redirect: 'follow' // Mengatasi masalah redirect Google
-                });
-                
-                statusDiv.innerText = `Berhasil! ${detectedItems.length} item tersimpan ke database.`;
+            if (successCount === allReceiptsData.length) {
+                statusDiv.innerText = `Berhasil! Semua ${successCount} struk telah tersimpan ke Google Sheets.`;
                 statusDiv.style.color = "green";
-                sendBtn.style.display = "none";
-                sendBtn.disabled = false;
-            } catch (err) {
-                console.error("Error Fetch: ", err); 
-                statusDiv.innerText = "Gagal menyimpan. Coba lagi.";
-                statusDiv.style.color = "red";
-                sendBtn.disabled = false;
+            } else {
+                statusDiv.innerText = `Selesai dengan error. Hanya ${successCount} dari ${allReceiptsData.length} yang terkirim.`;
+                statusDiv.style.color = "orange";
             }
+            
+            sendBtn.style.display = "none";
+            sendBtn.disabled = false;
         });
     </script>
 </body>
